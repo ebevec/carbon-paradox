@@ -1,5 +1,0 @@
-baseline_model
-evaluation
-gnn_model
-ingestion
-visualization
