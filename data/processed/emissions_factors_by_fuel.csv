@@ -1,0 +1,11 @@
+fuel_type,kgco2e_per_mwh
+Coal,1000.0
+Natural Gas,450.0
+Petroleum,780.0
+Other Gases,600.0
+Nuclear,12.0
+Hydro,24.0
+Wind,11.0
+Solar,45.0
+Biomass,230.0
+Geothermal,38.0
