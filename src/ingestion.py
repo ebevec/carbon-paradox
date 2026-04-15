@@ -145,7 +145,7 @@ if __name__ == "__main__":
     API_KEY = "eLTazpiHlIzXXf1c2iolPzhgsoPzhSxbUrqsqxhi"
     START = "2024-01-01T00"
     END = "2024-01-07T23"
-    REGIONS = ["PJM", "NYIS", "CISO"]
+    REGIONS = ["CISO", "ERCO", "ISNE", "MISO", "NYIS", "PJM", "SWPP"]
 
     EXCEL_FILE = RAW_DIR / "egrid2023_data_rev2.xlsx"
     SHAPEFILE_PATH = RAW_DIR / "eGRID2023_Subregions.shp"

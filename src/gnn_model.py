@@ -7,18 +7,44 @@ from sklearn.preprocessing import StandardScaler
 from torch_geometric.nn import GCNConv
 
 DATA_FILE = Path("data/processed/model_ready_data.csv")
+EDGES_FILE = Path("data/processed/grid_edges.csv")
 OUT_DIR = Path("out")
+EIA_TO_EGRID = {
+    "CISO": ["CAMX"],
+    "ERCO": ["ERCT"],
+    "ISNE": ["NEWE"],
+    "MISO": ["MROE", "MROW"],
+    "NYIS": ["NYCW", "NYLI", "NYUP"],
+    "PJM": ["RFCE", "RFCW"],
+    "SWPP": ["SPSO", "SRMW"],
+}
 
-def build_edge_index(num_nodes): #TODO find a new data source to connect the nodes more practically. this is a placeholder
+def build_edge_index(regions, edges):
     pairs = []
-    for i in range(num_nodes):
-        for j in range(num_nodes):
-            pairs.append([i, j])
+    edge_pairs = set()
+
+    for _, row in edges.iterrows():
+        edge_pairs.add((row["source_region"], row["target_region"]))
+        edge_pairs.add((row["target_region"], row["source_region"]))
+
+    for i, region_i in enumerate(regions):
+        pairs.append([i, i])
+
+        for j, region_j in enumerate(regions):
+            if i == j:
+                continue
+
+            left = EIA_TO_EGRID.get(region_i, [])
+            right = EIA_TO_EGRID.get(region_j, [])
+
+            connected = any((a, b) in edge_pairs for a in left for b in right)
+            if connected:
+                pairs.append([i, j])
 
     return torch.tensor(pairs, dtype=torch.long).t().contiguous()
 
 
-def get_snapshot_data(df, timestamp, feature_columns, target_column):
+def get_snapshot_data(df, timestamp, feature_columns, target_column, edges):
     snapshot = df[df["timestamp"] == timestamp].copy()
     snapshot = snapshot.dropna(subset=feature_columns + [target_column])
     snapshot = snapshot.sort_values("region").reset_index(drop=True)
@@ -28,7 +54,7 @@ def get_snapshot_data(df, timestamp, feature_columns, target_column):
 
     x = torch.tensor(snapshot[feature_columns].values, dtype=torch.float32)
     y = torch.tensor(snapshot[target_column].values, dtype=torch.float32)
-    edge_index = build_edge_index(len(snapshot))
+    edge_index = build_edge_index(snapshot["region"].tolist(), edges)
     return snapshot, x, y, edge_index
 
 
@@ -43,6 +69,7 @@ def main():
     tracker.start()
 
     df = pd.read_csv(DATA_FILE)
+    edges = pd.read_csv(EDGES_FILE)
 
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.sort_values(["timestamp", "region"]).reset_index(drop=True)
@@ -88,6 +115,7 @@ def main():
                 timestamp,
                 feature_columns,
                 target_column,
+                edges,
             )
             if snapshot is None:
                 continue
@@ -109,6 +137,7 @@ def main():
                 timestamp,
                 feature_columns,
                 target_column,
+                edges,
             )
             if snapshot is None:
                 continue

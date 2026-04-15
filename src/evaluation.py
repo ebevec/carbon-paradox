@@ -3,6 +3,7 @@ import pandas as pd
 
 OUT_DIR = Path("out")
 LOAD_KWH = 10
+RANDOM_SEED = 42
 
 def compare_models():
     baseline = pd.read_csv(OUT_DIR / "baseline_metrics.csv")
@@ -23,8 +24,9 @@ def simulate_charging_shift(predictions_file, model_name):
     for (region, date), group in df.groupby(["region", "date"]):
         group = group.sort_values("timestamp").copy()
 
-        random_actual = group["actual"].mean()
+        random_row = group.sample(n=1, random_state=RANDOM_SEED).iloc[0]
         best_row = group.loc[group["prediction"].idxmin()]
+        random_actual = random_row["actual"]
         optimized_actual = best_row["actual"]
         savings_kg = (LOAD_KWH / 1000) * (random_actual - optimized_actual)
 
@@ -33,6 +35,8 @@ def simulate_charging_shift(predictions_file, model_name):
                 "model": model_name,
                 "region": region,
                 "date": date,
+                "random_timestamp": random_row["timestamp"],
+                "optimized_timestamp": best_row["timestamp"],
                 "random_actual_carbon_intensity": random_actual,
                 "optimized_actual_carbon_intensity": optimized_actual,
                 "emissions_saved_kg": savings_kg,
