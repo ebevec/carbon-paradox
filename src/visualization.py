@@ -4,7 +4,7 @@ import pandas as pd
 
 OUT_DIR = Path("out")
 
-def plot_predictions(predictions_file, title):
+def plot_predictions(predictions_file, title, save_path=None):
     df = pd.read_csv(predictions_file)
     plt.plot(df["actual"].values, label="Actual")
     plt.plot(df["prediction"].values, label="Prediction")
@@ -13,10 +13,12 @@ def plot_predictions(predictions_file, title):
     plt.ylabel("Carbon intensity")
     plt.legend()
     plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
 
 
-def plot_model_comparison():
+def plot_model_comparison(save_path=None):
     baseline = pd.read_csv(OUT_DIR / "baseline_metrics.csv")
     gnn = pd.read_csv(OUT_DIR / "gnn_metrics.csv")
     comparison = baseline.merge(gnn, on="metric", suffixes=("_baseline", "_gnn"))
@@ -41,14 +43,18 @@ def plot_model_comparison():
     plt.title("Model Comparison")
     plt.legend()
     plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
 
 
-def plot_codecarbon(file_path, title):
+def plot_codecarbon(file_path, title, save_path=None):
     df = pd.read_csv(file_path)
     plt.figure(figsize=(6, 4))
     plt.bar([title], [df["emissions"].sum()])
     plt.ylabel("kg CO2eq")
     plt.title(title)
     plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()

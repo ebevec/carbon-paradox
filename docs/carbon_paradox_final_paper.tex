@@ -1,0 +1,285 @@
+\documentclass{article}
+
+\usepackage[final]{neurips_2023}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+
+\title{Worth its weight in carbon? An Analysis of Net-Positive Machine Learning in Grid Carbon Forecasting}
+
+\author{%
+  Erin Bevec \\
+  DSAN 5550: Data Science \& Climate Change\\
+  Georgetown University\\
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+  Machine learning can support climate-relevant decisions, but model training and inference consume energy and produce emissions. This paper evaluates whether machine learning for grid carbon forecasting can be environmentally net-positive by comparing the emissions reductions it enables to its computational footprint. Using electricity generation data, fuel-level emissions, and regional information, this paper estimates regional carbon intensity and day-ahead carbon forecasts across seven U.S. grid regions. An XGBoost regression and a graph neural network are compared to elucidate the performance-emissions tradeoff associated with increasing model complexity. Both models are evaluated using predictive accuracy, CodeCarbon-estimated training emissions, a simulated 10 kWh electric vehicle charging shift, and a break-even analysis. The XGBoost baseline outperformed the graph neural network on predictive accuracy, achieving an MAE of 48.997 and RMSE of 80.687. This exceeds the GNN's MAE of 87.644 and RMSE of 110.634. The baseline also had lower measured training emissions. Under the simplified charging simulation, both models had training emissions small enough to be offset almost immediately by average operational savings. The results suggest that, for this project, a lightweight model offered the best trade-off between forecast accuracy, computational carbon cost, and emissions-reducing decision support.
+\end{abstract}
+
+\section{Introduction}
+
+Machine learning models consume energy during both training and inference, producing measurable greenhouse gas emissions. At the same time, ML systems are increasingly deployed to support climate relevant decision making. This includes renewable integration, electricity grid optimization, and demand-side load shifting. This creates an important but underexplored tension: the same tools intended to mitigate climate change also contribute to emissions through computation. While the ``Green AI'' literature has focused on reducing model training cost, fewer studies directly evaluate whether a deployed climate-oriented ML system is environmentally net-positive when its operational benefits are compared to its computational footprint. Understanding this trade-off is essential as AI systems scale in energy and infrastructure domains. This project addresses that gap by quantifying both the carbon cost of a machine learning model and the emissions reductions it enables through improved grid-aware decision-making.
+
+This paper studies that trade-off in the context of short-term electricity grid carbon intensity forecasting. Carbon intensity varies across regions and hours as the electricity generation mix changes. If these changes can be forecasted, flexible electricity demand can be shifted toward lower-carbon periods. Electric vehicle charging is a useful example of this kind of flexible demand; for many charging sessions, the exact hour of charging can be adjusted without changing the total amount of electricity consumed. A forecasting model can therefore create environmental value if it helps schedule charging during cleaner grid conditions.
+
+The central question of this project is whether the emissions reductions enabled by a carbon-aware forecasting model outweigh the emissions produced by building and running the model itself. To examine this question, hourly regional carbon intensity is estimated using public electricity generation data. Two forecaseing models are trained, their computational carbon footprints are computed, and a carbon-aware EV charging decision was simulated. The first model is an XGBoost regression baseline that uses time-series features. The second is a graph neural network designed to incorporate spatial relationships among grid regions.
+
+The contribution of the project is an end-to-end data science pipeline that evaluates climate-oriented machine learning on both predictive and environmental criteria. Forecasting performance is measured using mean absolute error and root mean squared error. Environmental impact is measured using CodeCarbon-estimated model emissions, simulated emissions savings from shifting a 10 kWh charging session, and a break-even calculation that estimates how many optimized charging sessions are required to offset each model's training footprint. 
+
+\section{Problem definition}
+
+The technical problem in this project is day-ahead carbon intensity forecasting. Each observation represents one region-hour, with features describing the current electricity generation mix, estimated carbon intensity, lagged carbon intensity, and calendar timing. The prediction target is \texttt{target\_carbon\_intensity\_24h}, which represents the carbon intensity of electricity 24 hours ahead of the current observation. Carbon intensity is measured in kilograms of CO2-equivalent per megawatt-hour.
+
+The applied problem is a simplified carbon-aware electric vehicle charging decision. For each region and day in the test period, the model is used to select the hour with the lowest predicted carbon intensity within a 24-hour window. This optimized charging hour is compared with a randomly selected charging hour. The load is fixed at 10 kWh, so the simulation asks whether the timing of the same amount of electricity demand can reduce emissions by moving consumption from a dirtier hour to a cleaner hour.
+
+This framing creates two different definitions of success. The first is predictive success: a useful model should forecast day-ahead carbon intensity accurately, as measured by mean absolute error (MAE) and root mean squared error (RMSE). The second is environmental success: a model should enable emissions reductions that exceed the emissions created by training the model. A model can therefore be considered environmentally net-positive in this project if its average simulated charging savings are large enough to offset its CodeCarbon-estimated training footprint.
+
+\section{Data}
+
+Hourly electricity generation by fuel type was collected from U.S. Independent System Operator data available through the U.S. Energy Information Administration. U.S. Environmental Protection Agency eGRID reference data was used to connect electricity regions to construct approximate regional adjacency for the graph model.
+
+The modeled regions are CISO, ERCO, ISNE, MISO, NYIS, PJM, and SWPP. These regions were selected because they are major organized electricity market or balancing authority regions with available hourly fuel-mix data. The processed dataset covers January 2, 2024 through January 6, 2024. After preprocessing, the project contains 9,072 hourly generation-by-fuel records, 840 region-hour observations, and 59 grid-edge records derived from eGRID subregion adjacency.
+
+Carbon intensity was computed by multiplying generation from each fuel type by standardized emission factors and dividing by total hourly generation. The emissions factors represent average lifecycle emissions per unit of electricity generation and are treated as constant over time, meaning that the analysis approximates hourly carbon intensity using annualized emissions.
+
+In the final dataset, each row represents a single region-hour. The main raw inputs are timestamp, region, region name, fuel type, and generation in MWh. The main derived fields are total generation, total estimated CO2, and carbon intensity in kg CO2-equivalent per MWh. The graph data describe approximate adjacency relationships between eGRID subregions, which are later mapped to the EIA regions used in the forecasting models.
+
+\section{Preprocessing and feature engineering}
+
+The preprocessing workflow converts hourly generation-by-fuel records into a regional carbon intensity dataset. First, the generation table is merged with the fuel-level emissions factor table using fuel type. For each fuel entry, estimated emissions are calculated as generation in MWh multiplied by the corresponding kg CO2-equivalent per MWh emissions factor. The data are then aggregated by timestamp, region, and region name to compute total hourly generation and total estimated CO2 for each region-hour.
+
+Hourly carbon intensity is calculated by dividing total estimated CO2 by total generation. This produces a region-hour measure of kg CO2-equivalent per MWh. The data are sorted by region and timestamp so that temporal features can be constructed consistently. Three calendar features are constructed: hour of day, day of week, and month. These features capture regular electricity-system patterns associated with daily demand cycles and seasonal context.
+
+To represent recent grid conditions, two lag features are added for each region: \texttt{lag\_1}, the previous hour's carbon intensity, and \texttt{lag\_24}, the carbon intensity at the same hour on the previous day. These lags are useful because carbon intensity is temporally correlated: the current generation and the previous day's pattern often provide information about near-future grid conditions. The prediction target, \texttt{target\_carbon\_intensity\_24h}, is created by shifting each region's carbon intensity 24 hours backward relative to the current feature row, so that each row's features are paired with the next day's carbon intensity.
+
+Rows with missing lag values or missing target values are dropped. This removes the first 24 hours for each region, which do not yet have complete lag history, and the final 24 hours for each region, which do not have a day-ahead target. The resulting dataset contains 840 complete region-hour observations. 
+
+For the graph neural network, regions are represented as graph nodes. Edges are defined using approximate geographic adjacency from the eGRID subregion shapefile, then mapped from eGRID subregions to the EIA regions used in the forecasting task. This graph representation allows the GNN to pass information between neighboring regions during training, while the XGBoost baseline uses the same tabular time-series features without explicit spatial connections.
+
+\section{Methods}
+
+Two forecasting models are compared. The first is a lightweight XGBoost regression baseline that uses the data features without explicit spatial information. The second is a graph neural network, which represents regions as graph nodes and allows neighboring regions to exchange information during training through graph convolution. This comparison tests whether incorporating approximate regional grid structure improves day-ahead carbon intensity forecasting enough to justify the additional computational cost.
+
+\subsection{Baseline model: XGBoost regression}
+
+The baseline model is an XGBoost regressor trained on the processed region-hour dataset. It uses the same feature set for every region: \texttt{total\_generation\_mwh}, \texttt{total\_co2\_kg}, \texttt{carbon\_intensity\_kg\_per\_mwh}, \texttt{lag\_1}, \texttt{lag\_24}, \texttt{hour}, \texttt{day\_of\_week}, and \texttt{month}. The target is \texttt{target\_carbon\_intensity\_24h}. The data are sorted by timestamp and split chronologically, with the first 80\% used for training and the remaining 20\% used for testing.
+
+The XGBoost model is configured with 100 estimators, a maximum tree depth of 4, a learning rate of 0.1. This model is an appropriate baseline because gradient-boosted trees can model nonlinear relationships among calendar features, and are computationally inexpensive relative to neural models. In this project, the baseline also provides a useful reference point for evaluating whether the added spatial structure of the GNN produces enough benefit to justify its higher complexity.
+
+\subsection{Graph neural network}
+
+The graph neural network is designed to incorporate spatial dependencies among grid regions. Electricity systems are interconnected: generation changes in one region may influence or reflect conditions in neighboring regions through transmission flows, shared markets, and correlated demand patterns. A GNN allows neighboring nodes to exchange information during training, which gives the model a way to represent spatial correlations that the baseline does not explicitly model.
+
+The graph is constructed by mapping the seven modeled EIA regions to EPA eGRID subregions. Approximate eGRID subregion adjacency is used to define connections between regions, and self-loops are included so that each region also preserves its own local information during message passing. For each timestamp, the model creates a graph snapshot containing the available regions as nodes, their engineered features as node attributes, and day-ahead carbon intensity as the node-level target.
+
+The GNN uses two graph convolutional layers. The first graph convolution maps the eight input features to 16 hidden units, followed by a ReLU activation. The second graph convolution maps the hidden representation to one carbon intensity prediction per region. The model is trained for 100 epochs using the Adam optimizer with a learning rate of 0.001 and mean squared error loss.
+
+\subsection{Carbon tracking}
+
+The computational footprint of each model is measured with CodeCarbon. CodeCarbon estimates energy consumption and CO2-equivalent emissions based on model runtime, hardware, and the electricity carbon intensity associated with the machine's location. In this project, the emissions tracker is started before each model is trained and stopped after predictions and metrics are written. 
+
+The carbon tracking step is included directly in the modeling workflow rather than added as a separate post hoc estimate. The final break-even calculation uses the CodeCarbon-estimated training emissions for each model and compares them with the average simulated emissions savings per optimized charging session.
+
+\section{Evaluation}
+
+Evaluation occurs thorugh predictive performance and environmental impact.
+
+First, forecast accuracy is assessed using standard regression metrics, including mean absolute error (MAE) and root mean squared error (RMSE). The graph neural network is compared directly to the XGBoost baseline to determine whether incorporating spatial structure improves short-term carbon intensity forecasts.
+
+Second, environmental impact is evaluated through a simulated operational decision. Within each 24-hour region-day window in the test set, 10 kWh of electric vehicle charging is assigned either randomly or to the hour with the model's lowest predicted carbon intensity. This load size is small for a full EV charge, but it keeps the calculation simple and makes the result easy to scale. Emissions savings are calculated using actual observed carbon intensity, not predicted carbon intensity, so that estimated benefits reflect realized grid conditions. Savings are computed as the product of the shifted load and the difference between the actual carbon intensity of the random hour and the optimized hour:
+
+\begin{equation}
+  \text{savings}_{kg} = \frac{\text{load}_{kWh}}{1000}
+  \left(\text{CI}_{random,actual} - \text{CI}_{optimized,actual}\right)
+\end{equation}
+
+To determine whether each model is environmentally net-positive, a break-even analysis compares total model training emissions measured using CodeCarbon to the average emissions savings per optimized charging session. The break-even value is the number of optimized charging sessions required to offset the model's computational carbon footprint:
+
+\begin{equation}
+  \text{sessions to break even} =
+  \frac{\text{model training emissions}_{kg}}{\text{average savings per session}_{kg}}
+\end{equation}
+
+This evaluation design makes model success conditional on both accuracy and environmental value. A model that forecasts well but requires a large computational footprint may be less attractive than a simpler model with slightly lower complexity and sufficient decision quality. Conversely, a model with higher overall prediction error may still be useful if it reliably identifies low-carbon charging hours. The final environmental assessment focuses on the 10 kWh charging simulation and the resulting break-even calculation.
+
+
+\section{Results}
+
+\subsection{Forecasting performance}
+
+The XGBoost baseline outperformed the graph neural network on both predictive metrics. The baseline achieved an MAE of 48.997 and an RMSE of 80.687, while the GNN achieved an MAE of 87.644 and an RMSE of 110.634. These results indicate that, for this dataset and implementation, the simpler tabular model produced more accurate day-ahead carbon intensity forecasts than the graph-based model.
+
+\begin{table}[h]
+  \centering
+  \caption{Forecasting performance by model. Lower values indicate better predictive performance.}
+  \label{tab:forecasting-performance}
+  \begin{tabular}{lrr}
+    \toprule
+    Model & MAE & RMSE \\
+    \midrule
+    XGBoost baseline & 48.997 & 80.687 \\
+    Graph neural network & 87.644 & 110.634 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The GNN's weaker performance suggests that the added graph structure did not improve forecasting in the current setup. This may be a result of small sample size, or a too-strong assumption on the importance of interconnected graph regions. 
+
+\subsection{Prediction}
+
+The prediction plots show that both models produce forecasts on the correct general scale of carbon intensity, but the baseline tracks the observed values more closely. The XGBoost predictions follow the broad movement of the actual series and achieve lower overall error, although the model still misses some sharper changes.
+
+The GNN predictions also remain within a plausible carbon intensity range, but they are less accurate overall. The graph model appears to smooth some variation in the target series, which may contribute to its larger MAE and RMSE. Spatial message passing did not provide enough additional information to outperform the simpler baseline.
+
+\begin{figure}[t]
+  \centering
+
+  \begin{minipage}{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{../out/baseline_predictions.png}
+
+    Baseline
+  \end{minipage}
+  \hfill
+  \begin{minipage}{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{../out/gnn_predictions.png}
+
+    GNN
+  \end{minipage}
+
+  \caption{Actual vs. predicted carbon intensity.}
+  \label{fig:prediction-comparison}
+\end{figure}
+
+
+\subsection{Computational carbon cost}
+
+The CodeCarbon results show a clear difference in computational footprint between the two models. The baseline model produced approximately 0.00000633 kg CO2-equivalent in measured training emissions, while the GNN produced approximately 0.000627 kg CO2-equivalent. The GNN therefore had a substantially higher training footprint than the baseline, reflecting its longer training process and neural architecture.
+
+In absolute terms, both values are very small. This is expected because the project uses a modest dataset and relatively lightweight model architectures. However, the relative difference is still important. A more complex model should ideally provide either better predictive performance or better decision outcomes if it requires more computation. In this case, the GNN had both higher predictive error and higher measured training emissions than the XGBoost baseline.
+
+\begin{table}[h]
+  \centering
+  \caption{Training emissions and charging-session break-even values by model.}
+  \label{tab:carbon-cost}
+  \begin{tabular}{lrrr}
+    \toprule
+    Model & Train CO2e (kg) & Savings/session (kg) & Break-even sessions \\
+    \midrule
+    XGBoost baseline & 0.00000633 & 0.147711 & 0.000043 \\
+    Graph neural network & 0.00062738 & 0.643427 & 0.000975 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Charging simulation}
+
+The charging simulation evaluates whether the forecasts can support a useful operational decision. For the 10 kWh charging session, the baseline model produced average savings of approximately 0.1477 kg CO2-equivalent per session. The GNN produced higher average savings of approximately 0.6434 kg CO2-equivalent per session. The baseline produced positive emissions savings in 4 of 7 region-day cases, while the GNN produced positive savings in 5 of 7 cases.
+
+This result is more nuanced than the accuracy metrics alone. The baseline is more accurate overall, but the GNN produced larger average savings in this small charging simulation. This can happen because the decision task depends on selecting the lowest-carbon hour within a window, not minimizing average prediction error across all observations. A model can have worse overall RMSE but still choose a relatively good hour in some regions.
+
+Some simulated charging shifts produced negative savings, meaning the model-selected optimized hour had higher actual carbon intensity than the randomly selected hour. These cases are important because they show that carbon-aware optimization is only as useful as the forecasts driving it.
+
+\begin{table}[h]
+  \centering
+  \caption{Charging simulation summary.}
+  \label{tab:charging-simulation}
+  \begin{tabular}{lrrrr}
+    \toprule
+    Model & Avg. savings (kg) & Positive cases & Min savings (kg) & Max savings (kg) \\
+    \midrule
+    XGBoost baseline & 0.1477 & 4/7 & -0.1833 & 0.7108 \\
+    Graph neural network & 0.6434 & 5/7 & -0.5746 & 3.0179 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Break-even analysis}
+
+The break-even analysis compares each model's measured training emissions with its average simulated charging savings. The baseline requires approximately 0.000043 optimized charging sessions to offset its training emissions, while the GNN requires approximately 0.000975 sessions. Since both values are far below one charging session, both models appear environmentally net-positive under this simplified simulation.
+
+For intuition, if each model were trained one million times, the baseline would require about 43 optimized charging sessions to offset its training emissions, while the GNN would require about 975 optimized sessions. 
+
+Overall, the results favor the XGBoost baseline. It produced lower MAE, lower RMSE, and lower computational emissions. Although the GNN achieved higher average savings in the limited charging simulation, its weaker predictive performance and higher training footprint make it less attractive. A simpler model can be the better climate-oriented choice when it provides accurate enough forecasts at much lower computational cost.
+
+\section{Discussion}
+
+The results show that the simpler model was the stronger choice. The XGBoost baseline had lower MAE, lower RMSE, and lower measured training emissions than the graph neural network. This finding demonstrates a trade-off between model usefulness and model cost. A more complex model is not automatically better for climate applications if it does not produce enough additional value to justify its added computational footprint. In this case, the graph neural network added spatial structure, but that structure did not translate into better forecasts.
+
+This does not mean that graph-based methods are inappropriate for grid carbon forecasting. The motivation for the GNN remains reasonable as electricity regions are interconnected, and regional carbon intensity can be influenced by neighboring generation patterns. However, the GNN may not have enough data or sufficiently informative edges to learn useful spatial relationships in this case. The XGBoost model, by contrast, can perform strongly with this data.
+
+In the charging simulation, the baseline was more accurate overall. However, the GNN produced higher average emissions savings in the limited 10 kWh charging simulation. This shows why climate-oriented ML systems should be evaluated not only by prediction error, but also by the decisions they support. The model with the best average forecast error is not always guaranteed to produce the best operational decision in every setting.
+
+At the same time, the charging simulation should be interpreted carefully. It covers a limited evaluation window and a simplified charging scenario.
+
+The break-even results suggest that both models are environmentally net-positive under the assumptions of this project. Their measured training emissions are tiny relative to the average simulated savings from shifting a 10 kWh charging session. Small, targeted models can be net-positive when they support realistic emissions-reducing decisions.
+
+\section{Limitations}
+
+This project has several limitations that affect how broadly the results should be interpreted. The dataset covers a short period in January 2024 and includes seven grid regions. This is enough to demonstrate the end-to-end pipeline, but it is not enough to fully characterize seasonal patterns, rare grid conditions, or longer-term changes in generation. A longer dataset would provide a more reliable test of whether the models generalize.
+
+The carbon intensity estimates also rely on simplifying assumptions. Fuel-level emissions factors are treated as constant over time, so the analysis approximates average carbon intensity from the generation. As a result, the estimated savings should be interpreted as approximate average-emissions savings rather than precise marginal emissions reductions.
+
+The graph representation is another limitation. The GNN uses approximate adjacency relationships derived from eGRID subregion geography and mapped to EIA regions. This provides a reasonable first approximation of spatial structure, but it does not capture actual transmission relationships. A more realistic graph could change the usefulness of the GNN substantially.
+
+The modeling setup is intentionally modest. The XGBoost and GNN models were not extensively tuned, and the GNN architecture is simple.
+
+The charging simulation is also simplified. It uses a 10 kWh charging load, a limited test window, and a random charging hour as the behavioral baseline. Real EV charging behavior depends on driver schedules, charger availability, and other factors.
+
+\section{Future work}
+
+Future work should first expand the dataset. Using several months or a full year of hourly data would make it possible to evaluate seasonal variation, renewable generation patterns, and more diverse demand conditions. Adding more regions would also improve geographic coverage and provide a stronger basis for graph-based modeling.
+
+Future modeling work could also compare a broader set of forecasting approaches. The current GNN is intentionally simple, but carbon intensity is both temporal and spatial. Models designed for spatiotemporal forecasting, such as recurrent neural networks, transformer-based models, or spatiotemporal GNNs may be better suited to the problem. Systematic hyperparameter tuning would also make the comparison between model classes more complete.
+
+The operational simulation could be expanded beyond the single simplified charging setup. Future work could evaluate more days, multiple random seeds, or different charging loads.
+
+\section{Conclusion}
+
+This project evaluated whether machine learning for grid carbon forecasting can be environmentally net-positive when the model's computational emissions are compared with the emissions reductions it enables. To answer this question, the project built an end-to-end pipeline using public electricity generation data, fuel-level emissions factors, eGRID regional information, day-ahead forecasting models, CodeCarbon emissions tracking, a simulated EV charging decision, and a break-even analysis.
+
+The main predictive result is that the XGBoost baseline outperformed the graph neural network. The baseline achieved lower MAE and RMSE while also producing lower measured training emissions. The GNN incorporated spatial structure through graph convolution, but in this implementation the added complexity did not improve accuracy. 
+
+The environmental analysis showed that both models had very small training emissions relative to the simulated savings from shifting a 10 kWh charging session. Under the assumptions of the simulation, both models broke even almost immediately. However, the baseline provided the strongest overall trade-off because it combined better forecast accuracy with a much lower computational footprint.
+
+The central conclusion is that climate-oriented machine learning should be evaluated by both its predictive value and its environmental cost. A targeted, lightweight model can be environmentally useful when it supports emissions-reducing decisions without requiring substantial computational resources in order to solve the carbon paradox.
+
+\section*{References}
+
+\medskip
+
+{
+\small
+
+[1] U.S. Energy Information Administration. Hourly Electric Grid Monitor. U.S.
+Energy Information Administration. \url{https://www.eia.gov/electricity/gridmonitor/}.
+
+[2] U.S. Energy Information Administration. EIA API v2: electricity/rto/fuel-type-data.
+U.S. Energy Information Administration.
+\url{https://api.eia.gov/v2/electricity/rto/fuel-type-data/}.
+
+[3] U.S. Environmental Protection Agency. Emissions \& Generation Resource
+Integrated Database (eGRID), eGRID2023. U.S. Environmental Protection Agency.
+\url{https://www.epa.gov/egrid}.
+
+[4] U.S. Environmental Protection Agency. eGRID2023 Subregion Shapefiles. U.S.
+Environmental Protection Agency. \url{https://www.epa.gov/egrid/download-data}.
+
+}
+
+\end{document}
